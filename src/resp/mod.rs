@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
+use anyhow::Result;
 use bytes::BytesMut;
 use enum_dispatch::enum_dispatch;
+use thiserror::Error;
 
 mod decode;
 mod encode;
@@ -13,8 +15,29 @@ pub trait RespEncode {
     fn encode(self) -> Vec<u8>;
 }
 /// 解码
-pub trait RespDecode {
-    fn decode(buf: Self) -> Result<RespFrame, String>;
+pub trait RespDecode: Sized {
+    const PREFIX: &'static str;
+    fn decode(buf: &mut BytesMut) -> Result<Self, RespError>;
+    fn expect_length(buf: &[u8]) -> Result<usize, RespError>;
+}
+
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum RespError {
+    #[error("Invalid frame: {0}")]
+    InvalidFrame(String),
+    #[error("Invalid frame type: {0}")]
+    InvalidFrameType(String),
+    #[error("Invalid frame length: {0}")]
+    InvalidFrameLength(isize),
+    #[error("Frame is not complete")]
+    NotComplete,
+
+    #[error("parse error: {0}")]
+    ParseIntError(#[from] std::num::ParseIntError),
+    #[error("parse float error: {0}")]
+    ParseFloatError(#[from] std::num::ParseFloatError),
+    #[error("parse bulk string error: {0}")]
+    ParseBulkStringError(#[from] std::str::Utf8Error),
 }
 
 ///
@@ -36,6 +59,7 @@ pub trait RespDecode {
 /// - set "~<number-of-elements>\r\n<element-1>...<element-n>"
 ///
 #[enum_dispatch(RespEncode)]
+#[derive(Debug, PartialEq)]
 pub enum RespFrame {
     SimpleString(SimpleString),
     Error(SimpleError),
@@ -52,21 +76,24 @@ pub enum RespFrame {
     Set(RespSet),
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct SimpleString(String);
+#[derive(Debug, PartialEq)]
 pub struct SimpleError(String);
+#[derive(Debug, PartialEq)]
 pub struct RespNull;
+#[derive(Debug, PartialEq)]
 pub struct RespNullArray;
+#[derive(Debug, PartialEq)]
 pub struct RespNullBulkString;
+#[derive(Debug, PartialEq)]
 pub struct BulkString(Vec<u8>);
+#[derive(Debug, PartialEq)]
 pub struct RespArray(Vec<RespFrame>);
+#[derive(Debug, PartialEq)]
 pub struct RespMap(HashMap<String, RespFrame>);
+#[derive(Debug, PartialEq)]
 pub struct RespSet(Vec<RespFrame>);
-
-impl RespDecode for BytesMut {
-    fn decode(_buf: Self) -> Result<RespFrame, String> {
-        todo!()
-    }
-}
 
 impl Deref for BulkString {
     type Target = Vec<u8>;

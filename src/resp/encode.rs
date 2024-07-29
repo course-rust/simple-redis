@@ -22,7 +22,8 @@ impl RespEncode for SimpleError {
     }
 }
 
-///  big number "([+|-]<number>\r\n"
+// TODO:  big number "([+|-]<number>\r\n"
+
 ///  Integers This type is just a CRLF terminated string representing an integer, prefixed by a ":" byte.
 /// integer: ":[<+|->]<value>\r\n" For example ":0\r\n", or ":1000\r\n" are integer replies.
 impl RespEncode for i64 {
