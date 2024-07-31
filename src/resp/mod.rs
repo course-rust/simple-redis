@@ -59,7 +59,7 @@ pub enum RespError {
 /// - set "~<number-of-elements>\r\n<element-1>...<element-n>"
 ///
 #[enum_dispatch(RespEncode)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum RespFrame {
     SimpleString(SimpleString),
     Error(SimpleError),
@@ -76,29 +76,34 @@ pub enum RespFrame {
     Set(RespSet),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SimpleString(String);
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SimpleError(String);
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct RespNull;
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct RespNullArray;
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct RespNullBulkString;
-#[derive(Debug, PartialEq)]
-pub struct BulkString(Vec<u8>);
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
+pub struct BulkString(pub(crate) Vec<u8>);
+#[derive(Debug, PartialEq, Clone)]
 pub struct RespArray(Vec<RespFrame>);
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct RespMap(HashMap<String, RespFrame>);
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct RespSet(Vec<RespFrame>);
 
 impl Deref for BulkString {
     type Target = Vec<u8>;
 
     fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl AsRef<Vec<u8>> for BulkString {
+    fn as_ref(&self) -> &Vec<u8> {
         &self.0
     }
 }
