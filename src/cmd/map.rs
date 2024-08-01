@@ -6,12 +6,12 @@ use crate::{
 
 //===================  实现 CommandExecutor trait for Command
 impl CommandExecutor for Get {
-    fn execute(&self, backend: &Backend) -> RespFrame {
+    fn execute(self, backend: &Backend) -> RespFrame {
         backend.get(&self.key).unwrap_or(RespFrame::Null(RespNull))
     }
 }
 impl CommandExecutor for Set {
-    fn execute(&self, backend: &Backend) -> RespFrame {
+    fn execute(self, backend: &Backend) -> RespFrame {
         backend.set(self.key.clone(), self.value.clone());
         RESP_OK.clone()
     }
@@ -79,7 +79,7 @@ mod tests {
         buf.extend_from_slice(b"*3\r\n$3\r\nset\r\n$5\r\nhello\r\n$5\r\nworld\r\n");
 
         let frame = RespArray::decode(&mut buf)?;
-        let result: Set = frame.try_into()?;
+        let result: Set = frame.try_into()?; // Set::try_from(frame)
         assert_eq!(result.key, "hello");
         assert_eq!(
             result.value,

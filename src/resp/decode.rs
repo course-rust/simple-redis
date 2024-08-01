@@ -18,6 +18,7 @@ impl RespDecode for RespFrame {
         match iter.peek() {
             Some(b'+') => {
                 let frame = SimpleString::decode(buf)?;
+
                 Ok(frame.into())
             }
             Some(b'-') => {
@@ -70,6 +71,7 @@ impl RespDecode for RespFrame {
                 let frame = RespSet::decode(buf)?;
                 Ok(frame.into())
             }
+            None => Err(RespError::NotComplete),
             _ => Err(RespError::InvalidFrameType(format!(
                 "Invalid frame type: {:?}",
                 buf

@@ -1,9 +1,49 @@
-use crate::cmd::{extract_args, validate_command, HGetAll, HSet};
+use crate::cmd::{extract_args, validate_command, CommandExecutor, HGetAll, HSet, RESP_OK};
 use crate::{
     cmd::{CommandError, HGet},
-    RespArray, RespFrame,
+    Backend, BulkString, RespArray, RespFrame, RespNull,
 };
 
+//===================  实现 CommandExecutor trait for Command
+impl CommandExecutor for HGet {
+    fn execute(self, backend: &Backend) -> RespFrame {
+        backend
+            .hget(&self.key, &self.field)
+            .unwrap_or(RespFrame::Null(RespNull))
+    }
+}
+impl CommandExecutor for HGetAll {
+    fn execute(self, backend: &Backend) -> RespFrame {
+        let hmap = backend.hgetall(&self.key);
+        match hmap {
+            Some(hmap) => {
+                let mut data = Vec::with_capacity(hmap.len());
+                for v in hmap.iter() {
+                    let key = v.key().to_owned();
+                    data.push((key, v.value().clone()));
+                }
+                if self.sort {
+                    data.sort_by(|a, b| a.0.cmp(&b.0));
+                }
+                let ret = data
+                    .into_iter()
+                    .flat_map(|(k, v)| vec![BulkString::new(k.as_bytes()).into(), v])
+                    .collect::<Vec<RespFrame>>();
+
+                RespArray::new(ret).into()
+            }
+            None => RespFrame::Null(RespNull),
+        }
+    }
+}
+impl CommandExecutor for HSet {
+    fn execute(self, backend: &Backend) -> RespFrame {
+        backend.hset(self.key, self.field, self.value);
+        RESP_OK.clone()
+    }
+}
+
+//===================  实现 TryFrom trait for Command
 impl TryFrom<RespArray> for HGet {
     type Error = CommandError;
 
@@ -30,6 +70,7 @@ impl TryFrom<RespArray> for HGetAll {
         match args.next() {
             Some(RespFrame::BulkString(key)) => Ok(HGetAll {
                 key: String::from_utf8(key.0)?,
+                sort: false,
             }),
             _ => Err(CommandError::InvalidCommand(
                 "Invalid key for HGETALL command".to_string(),
@@ -107,6 +148,49 @@ mod tests {
             result.value,
             RespFrame::BulkString(BulkString::new(b"myvalue".to_vec()))
         );
+
+        Ok(())
+    }
+    #[test]
+    fn test_hset_hgetall_commands() -> Result<()> {
+        let backend = Backend::new();
+        let set_cmd = HSet {
+            key: "mykey".to_string(),
+            field: "myfield".to_string(),
+            value: RespFrame::BulkString(BulkString::new(b"myvalue".to_vec())),
+        };
+        let set_result = set_cmd.execute(&backend);
+        assert_eq!(set_result, RESP_OK.clone());
+
+        let get_cmd = HGet {
+            key: "mykey".to_string(),
+            field: "myfield".to_string(),
+        };
+        let get_result = get_cmd.execute(&backend);
+        assert_eq!(
+            get_result,
+            RespFrame::BulkString(BulkString::new(b"myvalue".to_vec()))
+        );
+
+        let set_cmd = HSet {
+            key: "mykey".to_string(),
+            field: "hello".to_string(),
+            value: RespFrame::BulkString(BulkString::new(b"world".to_vec())),
+        };
+        set_cmd.execute(&backend);
+
+        let getall_cmd = HGetAll {
+            key: "mykey".to_string(),
+            sort: true,
+        };
+        let getall_result = getall_cmd.execute(&backend);
+        let expected_result = RespArray::new(vec![
+            BulkString::new(b"hello".to_vec()).into(),
+            BulkString::new(b"world".to_vec()).into(),
+            BulkString::new(b"myfield".to_vec()).into(),
+            BulkString::new(b"myvalue".to_vec()).into(),
+        ]);
+        assert_eq!(getall_result, expected_result.into());
 
         Ok(())
     }

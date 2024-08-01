@@ -58,7 +58,7 @@ impl Backend {
             .get(key)
             .and_then(|v| v.get(field).map(|v| v.value().clone()))
     }
-    pub fn hset(&mut self, key: String, field: String, value: RespFrame) {
+    pub fn hset(&self, key: String, field: String, value: RespFrame) {
         let hmap = self.hmap.entry(key).or_default();
         hmap.insert(field, value);
     }
