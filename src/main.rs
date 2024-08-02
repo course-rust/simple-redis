@@ -4,6 +4,14 @@ use tracing::{error, info};
 
 use simple_redis::{network, Backend};
 
+/// Server data flow and data structure processing.
+///
+/// |Data structure    |      layer    |
+/// | ---              | ---           |
+/// |App Data (Command)|       App     |
+/// |Frame (RespFrame)  |     Ser/De   |
+/// |Byte steam (ByteMute) |   TCP     |
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing library

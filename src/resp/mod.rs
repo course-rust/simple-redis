@@ -1,13 +1,34 @@
-use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
-
 use anyhow::Result;
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use enum_dispatch::enum_dispatch;
 use thiserror::Error;
 
-mod decode;
-mod encode;
+pub use self::{
+    array::{RespArray, RespNullArray},
+    bulk_string::{BulkString, RespNullBulkString},
+    frame::RespFrame,
+    map::RespMap,
+    null::RespNull,
+    set::RespSet,
+    simple_error::SimpleError,
+    simple_string::SimpleString,
+};
+
+mod array;
+mod bool;
+mod bulk_string;
+mod double;
+mod frame;
+mod integer;
+mod map;
+mod null;
+mod set;
+mod simple_error;
+mod simple_string;
+
+const BUF_CAP: usize = 4096_usize;
+const CRLF: &[u8] = b"\r\n";
+const CRLF_LEN: usize = CRLF.len();
 
 /// 编码
 #[enum_dispatch]
@@ -20,7 +41,6 @@ pub trait RespDecode: Sized {
     fn decode(buf: &mut BytesMut) -> Result<Self, RespError>;
     fn expect_length(buf: &[u8]) -> Result<usize, RespError>;
 }
-
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum RespError {
     #[error("Invalid frame: {0}")]
@@ -40,161 +60,119 @@ pub enum RespError {
     ParseBulkStringError(#[from] std::str::Utf8Error),
 }
 
+fn extract_simple_frame_data(buf: &[u8], prefix: &str) -> Result<usize, RespError> {
+    if buf.len() < 3 {
+        return Err(RespError::NotComplete);
+    }
+    if !buf.starts_with(prefix.as_bytes()) {
+        return Err(RespError::InvalidFrameType(format!(
+            "expect: SimpleString({}), got: {:?}",
+            prefix, buf
+        )));
+    }
+    let mut end = 0_usize;
+    for i in 0..buf.len() - 1 {
+        if buf[i] == b'\r' && buf[i + 1] == b'\n' {
+            end = i;
+            break;
+        }
+    }
+    if end == 0 {
+        return Err(RespError::NotComplete);
+    }
+    Ok(end)
+}
+
+pub fn calc_total_len(
+    buf: &[u8],
+    end: usize,
+    len: usize,
+    prefix: &str,
+) -> Result<usize, RespError> {
+    let mut total = end + CRLF_LEN;
+    let mut data = &buf[total..];
+    match prefix {
+        "*" | "~" => {
+            // For array or set, we need to calculate each element length.
+            for _ in 0..len {
+                let len = RespFrame::expect_length(data)?;
+                data = &data[len..];
+                total += len;
+            }
+            Ok(total)
+        }
+        "%" => {
+            // Find nth CRLF in the buffer. For map, we need to find 2 CRLF for each key-value pair.
+            for _ in 0..len {
+                let len1 = SimpleString::expect_length(data)?;
+                data = &data[len1..];
+                total += len1;
+
+                let len2 = RespFrame::expect_length(data)?;
+                data = &data[len2..];
+                total += len2;
+            }
+            Ok(total)
+        }
+        _ => Ok(len + CRLF_LEN),
+    }
+}
+
+pub fn parse_length(buf: &[u8], prefix: &str) -> Result<(usize, usize), RespError> {
+    let end: usize = extract_simple_frame_data(buf, prefix)?;
+    let s = String::from_utf8_lossy(&buf[prefix.len()..end]);
+    Ok((end, s.parse()?))
+}
+
+/// Extracts a fixed amount of data from the buffer.
 ///
-/// - Simple Strings "+OK\r\n"
-/// - Errors "-Error message\r\n"
-/// - Integers This type is just a CRLF terminated string representing an integer, prefixed by a ":" byte.
-///   For example ":0\r\n", or ":1000\r\n" are integer replies.
-/// - Bulk Strings "$6\r\nfoobar\r\n" $0\r\n\r\n"
-/// - NullBulkString "$-1\r\n"
-/// - Array A `*` character as the first byte, followed by the number of elements in the array as a decimal number,
-///   followed by CRLF.
-///   An additional RESP type for every element of the Array.
-/// - NullArray "*-1\r\n"
-/// - Null "_\r\n"
-/// - boolean "#<t|f>\r\n"
-/// - double ",[<+|->]<integral>[.<fractional>][<E|e>[sign][exponent]]\r\n"
-/// - big number "([+|-]<number>\r\n"
-/// - map "%<number-of-entries>\r\n<key-1><value-1>...<key-n><value-n>"
-/// - set "~<number-of-elements>\r\n<element-1>...<element-n>"
+/// # Parameters
 ///
-#[enum_dispatch(RespEncode)]
-#[derive(Debug, PartialEq, Clone)]
-pub enum RespFrame {
-    SimpleString(SimpleString),
-    Error(SimpleError),
-    Integer(i64),
-    BulkString(BulkString),
-    NullBulkString(RespNullBulkString),
-    Array(RespArray),
-    NullArray(RespNullArray),
-    Null(RespNull),
+/// * `buf`: A mutable reference to a `BytesMut` containing the RESP data.
+/// * `expect`: A string representing the expected data.
+/// * `expect_type`: A string representing the type of data that is expected.
+///
+/// # Returns
+///
+/// * `Result<(), RespError>`:
+///   - `Ok(())`: If the expected data is successfully extracted from the buffer.
+///   - `Err(RespError)`: If the expected data is not found in the buffer or if the buffer is not complete.
+pub fn extract_fixed_data(
+    buf: &mut BytesMut,
+    expect: &str,
+    expect_type: &str,
+) -> Result<(), RespError> {
+    if buf.len() < expect.len() {
+        return Err(RespError::NotComplete);
+    }
+    if !buf.starts_with(expect.as_bytes()) {
+        return Err(RespError::InvalidFrameType(format!(
+            "expect: {}, got {:?}",
+            expect_type, buf
+        )));
+    }
 
-    Boolean(bool),
-    Double(f64),
-    Map(RespMap),
-    Set(RespSet),
+    buf.advance(expect.len());
+
+    Ok(())
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct SimpleString(String);
-#[derive(Debug, PartialEq, Clone)]
-pub struct SimpleError(String);
-#[derive(Debug, PartialEq, Clone)]
-pub struct RespNull;
-#[derive(Debug, PartialEq, Clone)]
-pub struct RespNullArray;
-#[derive(Debug, PartialEq, Clone)]
-pub struct RespNullBulkString;
-#[derive(Debug, PartialEq, Clone)]
-pub struct BulkString(pub(crate) Vec<u8>);
-#[derive(Debug, PartialEq, Clone)]
-pub struct RespArray(Vec<RespFrame>);
-#[derive(Debug, PartialEq, Clone)]
-pub struct RespMap(HashMap<String, RespFrame>);
-#[derive(Debug, PartialEq, Clone)]
-pub struct RespSet(Vec<RespFrame>);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl Deref for BulkString {
-    type Target = Vec<u8>;
+    #[test]
+    fn test_calc_array_length() -> Result<()> {
+        let buf = b"*2\r\n$3\r\nset\r\n$5\r\nhello\r\n";
+        let (end, len) = parse_length(buf, "*")?;
+        let total_len = calc_total_len(buf, end, len, "*")?;
+        assert_eq!(total_len, buf.len());
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl AsRef<Vec<u8>> for BulkString {
-    fn as_ref(&self) -> &Vec<u8> {
-        &self.0
-    }
-}
-impl Deref for RespArray {
-    type Target = Vec<RespFrame>;
+        let buf = b"%2\r\n+hello\r\n$5\r\nworld\r\n+foo\r\n$3\r\nbar\r\n";
+        let (end, len) = parse_length(buf, "%")?;
+        let total_len = calc_total_len(buf, end, len, "%")?;
+        assert_eq!(total_len, buf.len());
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl Deref for RespMap {
-    type Target = HashMap<String, RespFrame>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl DerefMut for RespMap {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-impl Deref for RespSet {
-    type Target = Vec<RespFrame>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl SimpleString {
-    pub fn new(s: impl Into<String>) -> Self {
-        SimpleString(s.into())
-    }
-}
-impl SimpleError {
-    pub fn new(s: impl Into<String>) -> Self {
-        SimpleError(s.into())
-    }
-}
-impl BulkString {
-    pub fn new(s: impl Into<Vec<u8>>) -> Self {
-        BulkString(s.into())
-    }
-}
-impl RespNullBulkString {
-    pub fn new() -> Self {
-        RespNullBulkString
-    }
-}
-impl Default for RespNullBulkString {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl RespArray {
-    pub fn new(s: impl Into<Vec<RespFrame>>) -> Self {
-        RespArray(s.into())
-    }
-}
-impl RespNullArray {
-    pub fn new() -> Self {
-        RespNullArray
-    }
-}
-impl Default for RespNullArray {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl RespNull {
-    pub fn new() -> Self {
-        RespNull
-    }
-}
-impl Default for RespNull {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl RespMap {
-    pub fn new() -> Self {
-        RespMap(HashMap::new())
-    }
-}
-impl Default for RespMap {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl RespSet {
-    pub fn new(s: impl Into<Vec<RespFrame>>) -> Self {
-        RespSet(s.into())
+        anyhow::Ok(())
     }
 }

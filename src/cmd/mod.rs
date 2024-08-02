@@ -9,6 +9,7 @@ mod hmap;
 mod map;
 
 lazy_static! {
+    ///  you can use `once_cell`  instead of using lazy_static
     static ref RESP_OK: RespFrame = RespFrame::SimpleString(SimpleString::new("OK".to_string()));
 }
 #[derive(Error, Debug)]
